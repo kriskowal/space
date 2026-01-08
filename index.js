@@ -36,6 +36,132 @@ const drawLine = (plotter, source, target, C, R, Z, T) => {
   }
 };
 
+// Draw visual HUD elements
+const drawHUD = (plotter, viewportSize, hudData) => {
+  const margin = 20;
+  const hudWidth = 150;
+  const hudHeight = 200;
+  const left = margin;
+  const top = margin;
+
+  plotter.save();
+
+  // HUD background
+  plotter.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  plotter.fillRect(left, top, hudWidth, hudHeight);
+  plotter.strokeStyle = '#444';
+  plotter.strokeRect(left, top, hudWidth, hudHeight);
+
+  // Range indicator (vertical bar)
+  const rangeBarX = left + 15;
+  const rangeBarY = top + 30;
+  const rangeBarHeight = 100;
+  const rangeBarWidth = 12;
+
+  plotter.strokeStyle = '#666';
+  plotter.strokeRect(rangeBarX, rangeBarY, rangeBarWidth, rangeBarHeight);
+
+  // Range fill (clamped 0-2000m mapped to bar)
+  const rangeNorm = Math.max(0, Math.min(1, hudData.range / 2000));
+  const rangeFillHeight = rangeBarHeight * (1 - rangeNorm);
+  plotter.fillStyle = rangeNorm < 0.1 ? '#f00' : rangeNorm < 0.3 ? '#ff0' : '#0f0';
+  plotter.fillRect(rangeBarX + 1, rangeBarY + rangeBarHeight - rangeFillHeight, rangeBarWidth - 2, rangeFillHeight);
+
+  plotter.fillStyle = '#fff';
+  plotter.font = '10px monospace';
+  plotter.fillText('RNG', rangeBarX - 2, rangeBarY - 5);
+  plotter.fillText(`${Math.floor(hudData.range)}m`, rangeBarX - 5, rangeBarY + rangeBarHeight + 15);
+
+  // Speed indicator (horizontal bar)
+  const speedBarX = left + 40;
+  const speedBarY = top + 30;
+  const speedBarWidth = 80;
+  const speedBarHeight = 12;
+
+  plotter.strokeStyle = '#666';
+  plotter.strokeRect(speedBarX, speedBarY, speedBarWidth, speedBarHeight);
+
+  // Speed fill (clamped to ±1 m/s)
+  const speedNorm = Math.max(-1, Math.min(1, hudData.rangeSpeed));
+  const speedMid = speedBarX + speedBarWidth / 2;
+  if (speedNorm > 0) {
+    plotter.fillStyle = '#f80';
+    plotter.fillRect(speedMid, speedBarY + 1, (speedBarWidth / 2) * speedNorm, speedBarHeight - 2);
+  } else {
+    plotter.fillStyle = '#08f';
+    plotter.fillRect(speedMid + (speedBarWidth / 2) * speedNorm, speedBarY + 1, -(speedBarWidth / 2) * speedNorm, speedBarHeight - 2);
+  }
+
+  // Center line
+  plotter.strokeStyle = '#fff';
+  plotter.beginPath();
+  plotter.moveTo(speedMid, speedBarY);
+  plotter.lineTo(speedMid, speedBarY + speedBarHeight);
+  plotter.stroke();
+
+  plotter.fillStyle = '#fff';
+  plotter.fillText('SPD', speedBarX + speedBarWidth / 2 - 10, speedBarY - 5);
+
+  // Heading indicator (compass)
+  const compassX = left + 80;
+  const compassY = top + 100;
+  const compassRadius = 30;
+
+  plotter.strokeStyle = '#666';
+  plotter.beginPath();
+  plotter.arc(compassX, compassY, compassRadius, 0, TAU);
+  plotter.stroke();
+
+  // Heading needle
+  const headingAngle = hudData.heading * TAU - TAU / 4; // Convert to radians, adjust for display
+  plotter.strokeStyle = '#0f0';
+  plotter.lineWidth = 2;
+  plotter.beginPath();
+  plotter.moveTo(compassX, compassY);
+  plotter.lineTo(
+    compassX + Math.cos(headingAngle) * compassRadius * 0.8,
+    compassY + Math.sin(headingAngle) * compassRadius * 0.8
+  );
+  plotter.stroke();
+  plotter.lineWidth = 1;
+
+  // Target direction indicator (if not heading towards it)
+  plotter.strokeStyle = '#f00';
+  plotter.beginPath();
+  plotter.arc(compassX, compassY, compassRadius - 5, -TAU / 4 - 0.1, -TAU / 4 + 0.1);
+  plotter.stroke();
+
+  plotter.fillStyle = '#fff';
+  plotter.fillText('HDG', compassX - 10, compassY - compassRadius - 5);
+
+  // Anchor status
+  const anchorX = left + 15;
+  const anchorY = top + 160;
+  plotter.fillStyle = hudData.anchored ? '#0ff' : '#444';
+  plotter.beginPath();
+  plotter.arc(anchorX + 8, anchorY + 8, 8, 0, TAU);
+  plotter.fill();
+  plotter.fillStyle = '#fff';
+  plotter.fillText('ANCHOR', anchorX + 22, anchorY + 12);
+
+  // Spin indicator
+  plotter.fillStyle = '#fff';
+  plotter.fillText(`SPIN: ${(hudData.spin * 1000).toFixed(2)}τ/s`, left + 10, top + hudHeight - 10);
+
+  // Modeline at bottom of screen
+  const modeline = 'W/↑:forward  S/↓:back  A/←:port  D/→:stbd  Q:rotate←  E:rotate→  SPACE:anchor';
+  plotter.font = '12px monospace';
+  plotter.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  const modelineWidth = plotter.measureText(modeline).width + 20;
+  const modelineX = (viewportSize.x - modelineWidth) / 2;
+  const modelineY = viewportSize.y - margin;
+  plotter.fillRect(modelineX, modelineY - 16, modelineWidth, 22);
+  plotter.fillStyle = '#fff';
+  plotter.fillText(modeline, modelineX + 10, modelineY);
+
+  plotter.restore();
+};
+
 const drawAbstractVessel = (plotter, center, direction, radius, C, R, Z, T) => {
   const top = ray2(center, direction, radius);
   const bottom = ray2(center, direction + TAU/2, radius);
@@ -60,7 +186,7 @@ const drawAbstractVessel = (plotter, center, direction, radius, C, R, Z, T) => {
   return null;
 };
 
-const drawVessel = (plotter, center, direction, radius, C, R, Z, T) => {
+const drawVessel = (plotter, center, direction, radius, C, R, Z, T, thrustState = null) => {
   const concrete = drawAbstractVessel(plotter, center, direction, radius, C, R, Z, T);
   if (concrete === null) {
     return;
@@ -71,6 +197,71 @@ const drawVessel = (plotter, center, direction, radius, C, R, Z, T) => {
   drawLine(plotter, top, port, C, R, Z, T);
   drawLine(plotter, top, stbd, C, R, Z, T);
   drawLine(plotter, port, stbd, C, R, Z, T);
+
+  // Draw thruster flames if thrust state is provided
+  if (thrustState) {
+    const flameLength = radius * 1.5;
+
+    // Main thruster (W key) - flame out the back
+    if (thrustState.forward) {
+      plotter.strokeStyle = '#f80';
+      const thrustPoint = ray2(center, direction + TAU/2, radius);
+      const flameEnd = ray2(center, direction + TAU/2, radius + flameLength);
+      drawLine(plotter, thrustPoint, flameEnd, C, R, Z, T);
+    }
+
+    // Reverse thruster (S key) - flame out the front
+    if (thrustState.backward) {
+      plotter.strokeStyle = '#f80';
+      const flameEnd = ray2(center, direction, radius + flameLength);
+      drawLine(plotter, top, flameEnd, C, R, Z, T);
+    }
+
+    const lateralFlame = flameLength * 0.5;
+    // Outward directions for each corner (radially away from center)
+    const portOutward = direction + TAU * 2/5;
+    const stbdOutward = direction + TAU * 3/5;
+    // Bow-side thruster positions (partway up each edge toward bow)
+    const portBow = lerp2(port, top, 0.7);
+    const stbdBow = lerp2(stbd, top, 0.7);
+
+    // Lateral thrusters (A/D keys) - single jet fires outward from opposite side
+    // Port strafe (A key) - fire from stbd corner outward
+    if (thrustState.left) {
+      plotter.strokeStyle = '#f80';
+      const flame = ray2(stbd, stbdOutward, lateralFlame);
+      drawLine(plotter, stbd, flame, C, R, Z, T);
+    }
+
+    // Starboard strafe (D key) - fire from port corner outward
+    if (thrustState.right) {
+      plotter.strokeStyle = '#f80';
+      const flame = ray2(port, portOutward, lateralFlame);
+      drawLine(plotter, port, flame, C, R, Z, T);
+    }
+
+    // Rotation thrusters (Q/E keys) - paired thrusters firing outward
+    // CCW (Q): stbd-bow fires stbd-outward + port-stern fires port-outward
+    if (thrustState.rotateLeft) {
+      plotter.strokeStyle = '#f80';
+      const stbdBowFlame = ray2(stbdBow, stbdOutward, lateralFlame);
+      drawLine(plotter, stbdBow, stbdBowFlame, C, R, Z, T);
+      const portSternFlame = ray2(port, portOutward, lateralFlame);
+      drawLine(plotter, port, portSternFlame, C, R, Z, T);
+    }
+
+    // CW (E): port-bow fires port-outward + stbd-stern fires stbd-outward
+    if (thrustState.rotateRight) {
+      plotter.strokeStyle = '#f80';
+      const portBowFlame = ray2(portBow, portOutward, lateralFlame);
+      drawLine(plotter, portBow, portBowFlame, C, R, Z, T);
+      const stbdSternFlame = ray2(stbd, stbdOutward, lateralFlame);
+      drawLine(plotter, stbd, stbdSternFlame, C, R, Z, T);
+    }
+
+    // Reset stroke style
+    plotter.strokeStyle = 'white';
+  }
 };
 
 // Collect world-space surface boundary points
@@ -104,8 +295,8 @@ const collectSurfacePoints = (
   return points;
 };
 
-// Fill the interior as a single dark polygon, projecting world-space points
-const fillInterior = (plotter, worldPoints, C, R, Z, color = '#111') => {
+// Fill the interior with sparse white dots in screen space
+const fillInterior = (plotter, worldPoints, origin, orientation, C, R, Z) => {
   if (worldPoints.length < 3) return;
 
   plotter.save();
@@ -119,9 +310,40 @@ const fillInterior = (plotter, worldPoints, C, R, Z, color = '#111') => {
   plotter.closePath();
   plotter.clip();
 
-  // Fill a large rect, clipped to the polygon shape
-  plotter.fillStyle = color;
-  plotter.fillRect(-10000, -10000, 20000, 20000);
+  // Project the origin to get screen-space center
+  const projectedOrigin = project(origin, C, R, Z);
+
+  // Draw a rotated grid of dots in screen space
+  const dotSpacing = 12;
+  const dotSize = 1;
+  const gridExtent = 500; // Cover enough area
+
+  plotter.fillStyle = 'white';
+
+  // Rotation matrix components
+  const cos = Math.cos(orientation);
+  const sin = Math.sin(orientation);
+
+  for (let gx = -gridExtent; gx <= gridExtent; gx += dotSpacing) {
+    for (let gy = -gridExtent; gy <= gridExtent; gy += dotSpacing) {
+      // Offset based on distance from edge (approximated by distance from center)
+      const distFromCenter = Math.hypot(gx, gy);
+      const depthOffset = distFromCenter * 0.02;
+
+      // Apply rotation around origin with depth-based offset
+      const offsetGx = gx + depthOffset;
+      const rx = offsetGx * cos - gy * sin;
+      const ry = offsetGx * sin + gy * cos;
+
+      const screenX = projectedOrigin.x + rx;
+      const screenY = projectedOrigin.y + ry;
+
+      plotter.beginPath();
+      plotter.arc(screenX, screenY, dotSize, 0, TAU);
+      plotter.fill();
+    }
+  }
+
   plotter.restore();
 };
 
@@ -181,7 +403,16 @@ const drawSurfaceDetail = (
       stopSurfacePoint,
     );
   } else {
-    plotter.strokeStyle = 'white';
+    // Check if this segment is in the landing zone
+    const segmentAngle = (numerator / denominator) * TAU;
+    let inLandingZone = false;
+    if (describeSurface.landingZoneAngle !== undefined) {
+      let distToLandingZone = Math.abs(segmentAngle - describeSurface.landingZoneAngle);
+      if (distToLandingZone > Math.PI) distToLandingZone = TAU - distToLandingZone;
+      inLandingZone = distToLandingZone < describeSurface.landingZoneWidth / 2;
+    }
+
+    plotter.strokeStyle = inLandingZone ? '#0f0' : 'white';
     drawLine(plotter, startDepthPoint, startSurfacePoint, C, R, Z, T);
     drawLine(plotter, startSurfacePoint, stopSurfacePoint, C, R, Z, T);
   }
@@ -211,7 +442,7 @@ const drawSurface = (plotter, origin, orientation, describeSurface, C, R, Z, T) 
   if (concrete) {
     // Collect world-space surface boundary points and fill interior
     const surfacePoints = collectSurfacePoints(origin, orientation, describeSurface, C, R, Z, T);
-    fillInterior(plotter, surfacePoints, C, R, Z);
+    fillInterior(plotter, surfacePoints, origin, orientation, C, R, Z);
 
     // Draw surface outline (white) on top
     drawSurfaceDetail(plotter, origin, orientation, describeSurface, C, R, Z, T);
@@ -224,6 +455,10 @@ const makeAsteroidSurface = (state, min, max, numPeaks = 12) => {
   const peakState = new Uint32Array(seed);
   churn(peakState);
 
+  // Landing zone at a consistent random angle
+  const landingZoneAngle = random(peakState) * TAU;
+  const landingZoneWidth = TAU / 16; // Width of the landing zone
+
   for (let i = 0; i < numPeaks; i++) {
     peaks.push({
       angle: random(peakState) * TAU,
@@ -235,8 +470,13 @@ const makeAsteroidSurface = (state, min, max, numPeaks = 12) => {
   const range = max - min;
 
   // Return function matching expected interface
-  return (n, d, _before, _after, _l) => {
+  const describeSurface = (n, d, _before, _after, _l) => {
     const angle = (n / d) * TAU;
+
+    // Check if we're in the landing zone
+    let distToLandingZone = Math.abs(angle - landingZoneAngle);
+    if (distToLandingZone > Math.PI) distToLandingZone = TAU - distToLandingZone;
+    const inLandingZone = distToLandingZone < landingZoneWidth / 2;
 
     let radius = min;
     for (const peak of peaks) {
@@ -244,14 +484,28 @@ const makeAsteroidSurface = (state, min, max, numPeaks = 12) => {
       let dist = Math.abs(angle - peak.angle);
       if (dist > Math.PI) dist = TAU - dist;
 
+      // Suppress peaks in the landing zone for a flatter surface
+      let peakContribution = peak.height;
+      if (inLandingZone) {
+        // Smoothly reduce peak contribution in landing zone
+        const landingZoneFactor = distToLandingZone / (landingZoneWidth / 2);
+        peakContribution *= landingZoneFactor;
+      }
+
       // Gaussian falloff - sharp peaks, smooth valleys
-      const contribution = peak.height * Math.exp(-peak.sharpness * dist * dist);
+      const contribution = peakContribution * Math.exp(-peak.sharpness * dist * dist);
       radius += range * contribution;
     }
 
     // entropy not used in this model, return normalized radius
     return { entropy: (radius - min) / range, radius };
   };
+
+  // Attach landing zone info to the function for rendering
+  describeSurface.landingZoneAngle = landingZoneAngle;
+  describeSurface.landingZoneWidth = landingZoneWidth;
+
+  return describeSurface;
 };
 
 export const radiusAt = (describeSurface, meridian, T) => {
@@ -339,6 +593,17 @@ const main = () => {
     a: 0,
     s: 0,
     d: 0,
+    ' ': 0, // Spacebar for anchor
+    ArrowUp: 0,
+    ArrowDown: 0,
+    ArrowLeft: 0,
+    ArrowRight: 0,
+  };
+
+  // Anchor state
+  let anchorState = {
+    deployed: false,
+    attachedAngle: 0, // Angle on asteroid where anchor is attached (in asteroid's local coords)
   };
 
   /**
@@ -350,6 +615,26 @@ const main = () => {
     if (key in keys) {
       keys[key] = 1;
       event.stopPropagation();
+
+      // Toggle anchor on spacebar press
+      if (key === ' ') {
+        if (!anchorState.deployed) {
+          // Deploy anchor - calculate attachment point on asteroid
+          const direction = direction2(targetPosition, vesselPosition);
+          const meridian = (direction + targetPosition.a + TAU) % TAU;
+          const surfaceRadius = radiusAt(describeAsteroidSurface, meridian, T);
+          const distanceToSurface = distance2(vesselPosition, targetPosition) - surfaceRadius;
+
+          // Only attach if close enough (within 50 units)
+          if (distanceToSurface < 50) {
+            anchorState.deployed = true;
+            anchorState.attachedAngle = meridian; // Store in asteroid's local coordinates
+          }
+        } else {
+          // Retract anchor
+          anchorState.deployed = false;
+        }
+      }
     }
   };
 
@@ -383,8 +668,8 @@ const main = () => {
     setTimeout(simulate, 100);
 
     const vesselThrust = {
-      x: (keys.w - keys.s) / 100000,
-      y: (keys.d - keys.a) / 100000,
+      x: (keys.w + keys.ArrowUp - keys.s - keys.ArrowDown) / 100000,
+      y: (keys.d + keys.ArrowRight - keys.a - keys.ArrowLeft) / 100000,
     };
     const vesselImpulse = {
       ...m2d.transform(
@@ -394,8 +679,46 @@ const main = () => {
       a: (keys.q - keys.e) * TAU / 100000000,
     };
 
-    vesselVelocity = add2a(vesselVelocity, scale2a(vesselImpulse, dt));
-    vesselPosition = add2a(vesselPosition, scale2a(vesselVelocity, dt));
+    if (anchorState.deployed) {
+      // When anchored, thrust applies torque to the asteroid
+      // Calculate the anchor point in world space
+      const anchorWorldAngle = anchorState.attachedAngle - targetPosition.a;
+      const anchorRadius = radiusAt(describeAsteroidSurface, anchorState.attachedAngle, T);
+      const anchorPoint = ray2(targetPosition, anchorWorldAngle, anchorRadius);
+
+      // Tether vector from asteroid center to vessel
+      const tetherVector = sub2(vesselPosition, targetPosition);
+      const tetherLength = Math.hypot(tetherVector.x, tetherVector.y);
+
+      // Apply thrust as torque to asteroid (simplified physics)
+      // The thrust perpendicular to the tether creates torque
+      const thrustMagnitude = Math.hypot(vesselImpulse.x, vesselImpulse.y);
+      const thrustAngle = Math.atan2(vesselImpulse.y, vesselImpulse.x);
+      const tetherAngle = Math.atan2(tetherVector.y, tetherVector.x);
+      const angleDiff = thrustAngle - tetherAngle;
+
+      // Torque is proportional to perpendicular component of thrust times tether length
+      const torque = thrustMagnitude * Math.sin(angleDiff) * tetherLength * 0.00001;
+      targetVelocity = { ...targetVelocity, a: targetVelocity.a + torque * dt };
+
+      // Vessel rotates with the asteroid (constrained by tether)
+      // Update vessel position to maintain tether length from anchor point
+      const currentDist = distance2(vesselPosition, anchorPoint);
+      if (currentDist > 0.1) {
+        const toAnchor = direction2(vesselPosition, anchorPoint);
+        // Apply some constraint force to keep vessel at tether length
+        vesselPosition = ray2(anchorPoint, toAnchor + Math.PI, Math.min(currentDist, anchorRadius + 30));
+      }
+
+      // Vessel still rotates independently
+      vesselVelocity = { ...vesselVelocity, a: vesselVelocity.a + vesselImpulse.a * dt };
+      vesselPosition = { ...vesselPosition, a: vesselPosition.a + vesselVelocity.a * dt };
+    } else {
+      // Normal flight - thrust affects vessel
+      vesselVelocity = add2a(vesselVelocity, scale2a(vesselImpulse, dt));
+      vesselPosition = add2a(vesselPosition, scale2a(vesselVelocity, dt));
+    }
+
     targetPosition = add2a(targetPosition, scale2a(targetVelocity, dt));
   };
 
@@ -412,9 +735,44 @@ const main = () => {
     );
 
     plotter.strokeStyle = 'white';
-    drawVessel(plotter, m2d.transform(vesselPosition, viewMatrix), vesselPosition.a - vesselPosition.a - TAU/4, 10, C, R, Z, T);
+    const thrustState = {
+      forward: keys.w || keys.ArrowUp,
+      backward: keys.s || keys.ArrowDown,
+      left: keys.a || keys.ArrowLeft,
+      right: keys.d || keys.ArrowRight,
+      rotateLeft: keys.q,
+      rotateRight: keys.e,
+    };
+    drawVessel(plotter, m2d.transform(vesselPosition, viewMatrix), vesselPosition.a - vesselPosition.a - TAU/4, 10, C, R, Z, T, thrustState);
     // drawVessel(plotter, m2d.transform(targetPosition, viewMatrix), targetPosition.a - vesselPosition.a - TAU/4, 0.5, C, R, Z, T);
     drawSurface(plotter, m2d.transform(targetPosition, viewMatrix), vesselPosition.a - targetPosition.a - TAU/4, describeAsteroidSurface, C, R, Z, T);
+
+    // Draw tether if anchored
+    if (anchorState.deployed) {
+      const anchorWorldAngle = anchorState.attachedAngle - targetPosition.a;
+      const anchorRadius = radiusAt(describeAsteroidSurface, anchorState.attachedAngle, T);
+      const anchorPoint = ray2(targetPosition, anchorWorldAngle, anchorRadius);
+      const anchorPointView = m2d.transform(anchorPoint, viewMatrix);
+      const vesselPointView = m2d.transform(vesselPosition, viewMatrix);
+
+      // Draw tether line
+      plotter.save();
+      plotter.strokeStyle = '#0ff';
+      const p1 = project(vesselPointView, C, R, Z);
+      const p2 = project(anchorPointView, C, R, Z);
+      plotter.beginPath();
+      plotter.moveTo(p1.x, p1.y);
+      plotter.lineTo(p2.x, p2.y);
+      plotter.stroke();
+      plotter.restore();
+
+      // Draw anchor point marker
+      const projectedAnchor = project(anchorPointView, C, R, Z);
+      plotter.fillStyle = '#0ff';
+      plotter.beginPath();
+      plotter.arc(projectedAnchor.x, projectedAnchor.y, 4, 0, TAU);
+      plotter.fill();
+    }
 
     // drawSurface(plotter, {x: 2000, y: 0}, Math.random() * Math.PI * 2, starSurfaceRadius, C, R, Z, T);
     // drawSurface(plotter, {x: 0, y: 15}, planetRotation, pentasterSurfaceRadius, C, R, Z, T);
@@ -433,6 +791,17 @@ const main = () => {
     const surfaceCircumference = TAU * elevation;
     const surfaceRangeSpeed = (vesselSpeedAcrossBearingToTarget / rangeCircumference - targetVelocity.a);
     const surfaceSpeed = surfaceRangeSpeed / rangeCircumference * surfaceCircumference;
+
+    // Draw visual HUD
+    const hudData = {
+      range: range,
+      rangeSpeed: vesselSpeedOnBearingToTarget,
+      heading: ((vesselDirectionToTarget - vesselPosition.a + TAU/2) % TAU / TAU),
+      spin: -vesselVelocity.a % TAU / TAU,
+      anchored: anchorState.deployed,
+    };
+    drawHUD(plotter, viewportSizePx, hudData);
+
     $info.innerText = `\
     range to target: ${distanceFormat.format(range)}m
     range speed ${vesselSpeedOnBearingToTarget.toFixed(1)}m/s
@@ -441,6 +810,7 @@ const main = () => {
     spin: ${(-vesselVelocity.a%TAU/TAU*1000).toFixed(4)}τ/s
     surface position: ${((vesselDirectionToTarget + targetPosition.a + TAU) % TAU / TAU).toFixed(2)}τ
     surface speed: ${surfaceSpeed.toFixed(1)}m/s
+    anchored: ${anchorState.deployed ? 'YES' : 'NO'}
     `;
   };
 
