@@ -73,6 +73,58 @@ const drawVessel = (plotter, center, direction, radius, C, R, Z, T) => {
   drawLine(plotter, port, stbd, C, R, Z, T);
 };
 
+// Collect world-space surface boundary points
+const collectSurfacePoints = (
+  origin,
+  orientation,
+  describeSurface,
+  C, R, Z, T,
+  points = [],
+  before = 0,
+  after = 0,
+  numerator = 0,
+  divisions = 0,
+  denominator = (1 << divisions),
+  start = describeSurface(numerator, denominator, before, after, divisions),
+  stop = describeSurface(((numerator + 1) % denominator), denominator, before, after, divisions),
+) => {
+  const startSurfacePoint = ray2(origin, orientation + (numerator / denominator) * TAU, start.radius);
+  const levelSurfacePoint = ray2(origin, orientation + ((numerator + 1) / denominator) * TAU, start.radius);
+  const projectedStartSurfacePoint = project(startSurfacePoint, C, R, Z);
+  const projectedLevelSurfacePoint = project(levelSurfacePoint, C, R, Z);
+
+  if (divisions <= 3 || distance2(projectedStartSurfacePoint, projectedLevelSurfacePoint) > T) {
+    const center = describeSurface(numerator * 2 + 1, denominator * 2, start.entropy, stop.entropy, divisions);
+    collectSurfacePoints(origin, orientation, describeSurface, C, R, Z, T, points, before, center.entropy, numerator * 2, divisions + 1, denominator * 2, start, center);
+    collectSurfacePoints(origin, orientation, describeSurface, C, R, Z, T, points, center.entropy, after, numerator * 2 + 1, divisions + 1, denominator * 2, center, stop);
+  } else {
+    // Collect world-space point, not projected
+    points.push(startSurfacePoint);
+  }
+  return points;
+};
+
+// Fill the interior as a single dark polygon, projecting world-space points
+const fillInterior = (plotter, worldPoints, C, R, Z, color = '#111') => {
+  if (worldPoints.length < 3) return;
+
+  plotter.save();
+  plotter.beginPath();
+  const p0 = project(worldPoints[0], C, R, Z);
+  plotter.moveTo(p0.x, p0.y);
+  for (let i = 1; i < worldPoints.length; i++) {
+    const p = project(worldPoints[i], C, R, Z);
+    plotter.lineTo(p.x, p.y);
+  }
+  plotter.closePath();
+  plotter.clip();
+
+  // Fill a large rect, clipped to the polygon shape
+  plotter.fillStyle = color;
+  plotter.fillRect(-10000, -10000, 20000, 20000);
+  plotter.restore();
+};
+
 const drawSurfaceDetail = (
   plotter,
   origin,
@@ -93,7 +145,7 @@ const drawSurfaceDetail = (
   const levelSurfacePoint = ray2(origin, orientation + ((numerator + 1) / denominator) * TAU, start.radius);
   const projectedStartSurfacePoint = project(startSurfacePoint, C, R, Z);
   const projectedLevelSurfacePoint = project(levelSurfacePoint, C, R, Z);
-  if (divisions <= 3 || distance2(projectedStartSurfacePoint, projectedLevelSurfacePoint) > T) { 
+  if (divisions <= 3 || distance2(projectedStartSurfacePoint, projectedLevelSurfacePoint) > T) {
     const center = describeSurface(numerator * 2 + 1, denominator * 2, start.entropy, stop.entropy, divisions);
     drawSurfaceDetail(
       plotter,
@@ -129,23 +181,26 @@ const drawSurfaceDetail = (
       stopSurfacePoint,
     );
   } else {
+    plotter.strokeStyle = 'white';
     drawLine(plotter, startDepthPoint, startSurfacePoint, C, R, Z, T);
     drawLine(plotter, startSurfacePoint, stopSurfacePoint, C, R, Z, T);
   }
 };
 
-const drawAbstractSurface = (plotter, center, orientation, describeSurface, C, R, Z, T) => {
-  const angle = Math.atan2(center.x, center.y);
-  const widdershins = ray2(center, angle, describeSurface);
-  const projectedCenter = project(center, C, R, Z);
-  const projectedWiddershins = project(widdershins, C, R, Z);
-  const spread = distance2(projectedCenter, projectedWiddershins);
-  if (spread > T*2) {
+const drawAbstractSurface = (plotter, center, orientation, surfaceRadius, C, R, Z, T) => {
+  // Measure spread radially (independent of rotation) using projection formula directly
+  const distanceToCenter = Math.hypot(center.x, center.y);
+  const centerProjectedRadius = Math.atan2(distanceToCenter, Z) / TAU * 4 * R;
+  const nearEdgeProjectedRadius = Math.atan2(Math.max(0, distanceToCenter - surfaceRadius), Z) / TAU * 4 * R;
+  const spread = centerProjectedRadius - nearEdgeProjectedRadius;
+
+  if (spread > T * 2) {
     return true;
   }
+  const projectedCenter = project(center, C, R, Z);
   plotter.beginPath();
   plotter.moveTo(projectedCenter.x, projectedCenter.y);
-  plotter.arc(projectedCenter.x, projectedCenter.y, T, orientation, orientation+TAU, false);
+  plotter.arc(projectedCenter.x, projectedCenter.y, T, orientation, orientation + TAU, false);
   plotter.stroke();
   return false;
 };
@@ -154,25 +209,49 @@ const drawSurface = (plotter, origin, orientation, describeSurface, C, R, Z, T) 
   const r = describeSurface(0, 1, 0, 0, 0).radius;
   const concrete = drawAbstractSurface(plotter, origin, orientation, r, C, R, Z, T);
   if (concrete) {
+    // Collect world-space surface boundary points and fill interior
+    const surfacePoints = collectSurfacePoints(origin, orientation, describeSurface, C, R, Z, T);
+    fillInterior(plotter, surfacePoints, C, R, Z);
+
+    // Draw surface outline (white) on top
     drawSurfaceDetail(plotter, origin, orientation, describeSurface, C, R, Z, T);
   }
 };
 
-const makeAsteroidSurface = (state, min, max) => (n, d, before, after, l) => {
-  // return { entropy: 0, radius: min + (max - min) * n / d };
-  const s = ~(n * 0xffffffff / d);
-  state.set(seed);
-  fold(state, [s, s >> 8, s >> 16, s >> 24]);
-  churn(state);
-  churn(state);
-  churn(state);
-  let entropy = 0.5;
-  for (let i = (8 - l); i >= 0; i--) {
-    entropy = (entropy + random(state)) / 2;
+const makeAsteroidSurface = (state, min, max, numPeaks = 12) => {
+  // Generate random peaks using consistent seeding
+  const peaks = [];
+  const peakState = new Uint32Array(seed);
+  churn(peakState);
+
+  for (let i = 0; i < numPeaks; i++) {
+    peaks.push({
+      angle: random(peakState) * TAU,
+      height: random(peakState) * 0.5 + 0.1,  // 10-60% of radius range
+      sharpness: random(peakState) * 20 + 8,  // Controls peak width (higher = sharper)
+    });
   }
-  entropy = entropy / d + (1 - 1 / d) * (before + after) / 2;
-  const radius = min + (max - min) * entropy;
-  return { entropy, radius };
+
+  const range = max - min;
+
+  // Return function matching expected interface
+  return (n, d, _before, _after, _l) => {
+    const angle = (n / d) * TAU;
+
+    let radius = min;
+    for (const peak of peaks) {
+      // Angular distance with wraparound
+      let dist = Math.abs(angle - peak.angle);
+      if (dist > Math.PI) dist = TAU - dist;
+
+      // Gaussian falloff - sharp peaks, smooth valleys
+      const contribution = peak.height * Math.exp(-peak.sharpness * dist * dist);
+      radius += range * contribution;
+    }
+
+    // entropy not used in this model, return normalized radius
+    return { entropy: (radius - min) / range, radius };
+  };
 };
 
 export const radiusAt = (describeSurface, meridian, T) => {
