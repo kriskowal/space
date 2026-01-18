@@ -1,8 +1,15 @@
 
 import * as m2d from './matrix2d.js';
 import { sub2, dot2, perp2, lerp2, distance2, direction2, ray2, scale2 } from './geometry2d.js';
-import { add2a, scale2a } from './geometry2a.js';
 import { churn, fold, random } from './xorshift128.js';
+import { radiusAt } from './surface.js';
+import {
+  updateAnchoredPhysics,
+  updateFlightPhysics,
+  updateTargetPosition,
+  checkCollision,
+  applyBounce,
+} from './physics.js';
 
 const TAU = Math.PI * 2;
 
@@ -34,132 +41,6 @@ const drawLine = (plotter, source, target, C, R, Z, T) => {
       plotter.stroke();
     }
   }
-};
-
-// Draw visual HUD elements
-const drawHUD = (plotter, viewportSize, hudData) => {
-  const margin = 20;
-  const hudWidth = 150;
-  const hudHeight = 200;
-  const left = margin;
-  const top = margin;
-
-  plotter.save();
-
-  // HUD background
-  plotter.fillStyle = 'rgba(0, 0, 0, 0.5)';
-  plotter.fillRect(left, top, hudWidth, hudHeight);
-  plotter.strokeStyle = '#444';
-  plotter.strokeRect(left, top, hudWidth, hudHeight);
-
-  // Range indicator (vertical bar)
-  const rangeBarX = left + 15;
-  const rangeBarY = top + 30;
-  const rangeBarHeight = 100;
-  const rangeBarWidth = 12;
-
-  plotter.strokeStyle = '#666';
-  plotter.strokeRect(rangeBarX, rangeBarY, rangeBarWidth, rangeBarHeight);
-
-  // Range fill (clamped 0-2000m mapped to bar)
-  const rangeNorm = Math.max(0, Math.min(1, hudData.range / 2000));
-  const rangeFillHeight = rangeBarHeight * (1 - rangeNorm);
-  plotter.fillStyle = rangeNorm < 0.1 ? '#f00' : rangeNorm < 0.3 ? '#ff0' : '#0f0';
-  plotter.fillRect(rangeBarX + 1, rangeBarY + rangeBarHeight - rangeFillHeight, rangeBarWidth - 2, rangeFillHeight);
-
-  plotter.fillStyle = '#fff';
-  plotter.font = '10px monospace';
-  plotter.fillText('RNG', rangeBarX - 2, rangeBarY - 5);
-  plotter.fillText(`${Math.floor(hudData.range)}m`, rangeBarX - 5, rangeBarY + rangeBarHeight + 15);
-
-  // Speed indicator (horizontal bar)
-  const speedBarX = left + 40;
-  const speedBarY = top + 30;
-  const speedBarWidth = 80;
-  const speedBarHeight = 12;
-
-  plotter.strokeStyle = '#666';
-  plotter.strokeRect(speedBarX, speedBarY, speedBarWidth, speedBarHeight);
-
-  // Speed fill (clamped to ±1 m/s)
-  const speedNorm = Math.max(-1, Math.min(1, hudData.rangeSpeed));
-  const speedMid = speedBarX + speedBarWidth / 2;
-  if (speedNorm > 0) {
-    plotter.fillStyle = '#f80';
-    plotter.fillRect(speedMid, speedBarY + 1, (speedBarWidth / 2) * speedNorm, speedBarHeight - 2);
-  } else {
-    plotter.fillStyle = '#08f';
-    plotter.fillRect(speedMid + (speedBarWidth / 2) * speedNorm, speedBarY + 1, -(speedBarWidth / 2) * speedNorm, speedBarHeight - 2);
-  }
-
-  // Center line
-  plotter.strokeStyle = '#fff';
-  plotter.beginPath();
-  plotter.moveTo(speedMid, speedBarY);
-  plotter.lineTo(speedMid, speedBarY + speedBarHeight);
-  plotter.stroke();
-
-  plotter.fillStyle = '#fff';
-  plotter.fillText('SPD', speedBarX + speedBarWidth / 2 - 10, speedBarY - 5);
-
-  // Heading indicator (compass)
-  const compassX = left + 80;
-  const compassY = top + 100;
-  const compassRadius = 30;
-
-  plotter.strokeStyle = '#666';
-  plotter.beginPath();
-  plotter.arc(compassX, compassY, compassRadius, 0, TAU);
-  plotter.stroke();
-
-  // Heading needle
-  const headingAngle = hudData.heading * TAU - TAU / 4; // Convert to radians, adjust for display
-  plotter.strokeStyle = '#0f0';
-  plotter.lineWidth = 2;
-  plotter.beginPath();
-  plotter.moveTo(compassX, compassY);
-  plotter.lineTo(
-    compassX + Math.cos(headingAngle) * compassRadius * 0.8,
-    compassY + Math.sin(headingAngle) * compassRadius * 0.8
-  );
-  plotter.stroke();
-  plotter.lineWidth = 1;
-
-  // Target direction indicator (if not heading towards it)
-  plotter.strokeStyle = '#f00';
-  plotter.beginPath();
-  plotter.arc(compassX, compassY, compassRadius - 5, -TAU / 4 - 0.1, -TAU / 4 + 0.1);
-  plotter.stroke();
-
-  plotter.fillStyle = '#fff';
-  plotter.fillText('HDG', compassX - 10, compassY - compassRadius - 5);
-
-  // Anchor status
-  const anchorX = left + 15;
-  const anchorY = top + 160;
-  plotter.fillStyle = hudData.anchored ? '#0ff' : '#444';
-  plotter.beginPath();
-  plotter.arc(anchorX + 8, anchorY + 8, 8, 0, TAU);
-  plotter.fill();
-  plotter.fillStyle = '#fff';
-  plotter.fillText('ANCHOR', anchorX + 22, anchorY + 12);
-
-  // Spin indicator
-  plotter.fillStyle = '#fff';
-  plotter.fillText(`SPIN: ${(hudData.spin * 1000).toFixed(2)}τ/s`, left + 10, top + hudHeight - 10);
-
-  // Modeline at bottom of screen
-  const modeline = 'W/↑:forward  S/↓:back  A/←:port  D/→:stbd  Q:rotate←  E:rotate→  SPACE:anchor';
-  plotter.font = '12px monospace';
-  plotter.fillStyle = 'rgba(0, 0, 0, 0.5)';
-  const modelineWidth = plotter.measureText(modeline).width + 20;
-  const modelineX = (viewportSize.x - modelineWidth) / 2;
-  const modelineY = viewportSize.y - margin;
-  plotter.fillRect(modelineX, modelineY - 16, modelineWidth, 22);
-  plotter.fillStyle = '#fff';
-  plotter.fillText(modeline, modelineX + 10, modelineY);
-
-  plotter.restore();
 };
 
 const drawAbstractVessel = (plotter, center, direction, radius, C, R, Z, T) => {
@@ -310,33 +191,34 @@ const fillInterior = (plotter, worldPoints, origin, orientation, C, R, Z) => {
   plotter.closePath();
   plotter.clip();
 
-  // Project the origin to get screen-space center
+  // Project the origin to get screen-space asteroid center for rotation reference
   const projectedOrigin = project(origin, C, R, Z);
 
-  // Draw a rotated grid of dots in screen space
+  // Draw a rotated grid of dots covering the entire screen
   const dotSpacing = 12;
   const dotSize = 1;
-  const gridExtent = 500; // Cover enough area
+  const gridExtent = R * 4; // Cover entire viewport even when offset from center
 
   plotter.fillStyle = 'white';
 
-  // Rotation matrix components
+  // Rotation matrix components (rotate around asteroid center)
   const cos = Math.cos(orientation);
   const sin = Math.sin(orientation);
 
   for (let gx = -gridExtent; gx <= gridExtent; gx += dotSpacing) {
     for (let gy = -gridExtent; gy <= gridExtent; gy += dotSpacing) {
-      // Offset based on distance from edge (approximated by distance from center)
-      const distFromCenter = Math.hypot(gx, gy);
-      const depthOffset = distFromCenter * 0.02;
+      // Distance from asteroid center in grid space for depth offset
+      const distFromOrigin = Math.hypot(gx - (projectedOrigin.x - C.x), gy - (projectedOrigin.y - C.y));
+      const depthOffset = distFromOrigin * 0.02;
 
-      // Apply rotation around origin with depth-based offset
-      const offsetGx = gx + depthOffset;
-      const rx = offsetGx * cos - gy * sin;
-      const ry = offsetGx * sin + gy * cos;
+      // Apply rotation around asteroid center
+      const relX = gx - (projectedOrigin.x - C.x);
+      const relY = gy - (projectedOrigin.y - C.y);
+      const rotX = relX * cos - relY * sin + depthOffset * cos;
+      const rotY = relX * sin + relY * cos + depthOffset * sin;
 
-      const screenX = projectedOrigin.x + rx;
-      const screenY = projectedOrigin.y + ry;
+      const screenX = C.x + (projectedOrigin.x - C.x) + rotX;
+      const screenY = C.y + (projectedOrigin.y - C.y) + rotY;
 
       plotter.beginPath();
       plotter.arc(screenX, screenY, dotSize, 0, TAU);
@@ -508,36 +390,15 @@ const makeAsteroidSurface = (state, min, max, numPeaks = 12) => {
   return describeSurface;
 };
 
-export const radiusAt = (describeSurface, meridian, T) => {
-  let n = 0;
-  let d = 1;
-  let l = 0;
-  let before = 0;
-  let after = 0;
-  let description = describeSurface(n, d, before, after, l);
-  before = description.entropy;
-  after = description.entropy;
-  while (TAU * description.radius / d > T / 2) {
-    n*=2;
-    d*=2;
-    l+=1;
-    description = describeSurface(n+1, d, before, after, l);
-    if (TAU * (n+1) / d > meridian) {
-      after = description.entropy;
-    } else {
-      before = description.entropy;
-      n+=1;
-    }
-  }
-  return description.radius;
-};
-
 const main = () => {
   const distanceFormat = new Intl.NumberFormat([], {
     maximumFractionDigits: 0,
   });
   const speedFormat = new Intl.NumberFormat([], {
     maximumFractionDigits: 3,
+  });
+  const zFormat = new Intl.NumberFormat([], {
+    maximumFractionDigits: 0,
   });
 
   const $plotter = document.querySelector('#plotter');
@@ -557,7 +418,27 @@ const main = () => {
   // 50% the radius of the projection, or the elevation of an
   // observer over the center that can see to infinity in all
   // directions within a circle of radius 2 Z.
-  const Z = 100;
+  // Z is controlled by a slider, logarithmically from 100 to 100000
+  let Z = 100;
+
+  // Z slider setup
+  const $zSlider = document.querySelector('#z-slider');
+  let isDraggingZ = false;
+  const updateZ = () => {
+    // Slider value is 0-100, convert to logarithmic scale: 100 to solar system diameter
+    // Solar system diameter ≈ 1 × 10^16 meters (including Oort cloud)
+    // Z = 100 * 10^(slider_value * log10(10^16 / 100))
+    // log10(10^16 / 100) = log10(10^14) = 14
+    const sliderValue = parseFloat($zSlider.value) / 100; // 0 to 1
+    Z = 100 * Math.pow(10, sliderValue * 14); // 100 * 10^(0 to 14) = 100 to 10^16
+  };
+  $zSlider.addEventListener('input', updateZ);
+  $zSlider.addEventListener('mousedown', () => { isDraggingZ = true; });
+  $zSlider.addEventListener('touchstart', () => { isDraggingZ = true; });
+  $zSlider.addEventListener('mouseup', () => { isDraggingZ = false; });
+  $zSlider.addEventListener('touchend', () => { isDraggingZ = false; });
+  $zSlider.addEventListener('mouseleave', () => { isDraggingZ = false; });
+  updateZ(); // Initialize Z from slider
 
   // T is the threshold for partitioning a segment, used to
   // reduce level of detail for indistinct features.
@@ -577,13 +458,39 @@ const main = () => {
   // const pentasterSurfaceRadius = makeSinusoidSurface(13, 2, 5);
   // const starSurfaceRadius = makeRandomSurface(1000, 1100);
 
-  let vesselPosition = {x: 0, y: 0, a: 0};
-  let vesselVelocity = {x: 0, y: 0, a: 0};
+  // Surface adapter for physics library
+  const surface = {
+    radiusAt: (angle) => radiusAt(describeAsteroidSurface, angle, T),
+  };
 
-  let targetPosition = {x: 1000, y: 0, a: TAU/2};
-  let targetVelocity = {x: 1 / 1000, y: 0, a: 0};
+  // Mean radius for mass calculations (average of min/max)
+  const meanRadius = 750;
+
+  // Game state
+  const GAME_STATE = {
+    PLAYING: 'playing',
+    PAUSED: 'paused',  // High-energy collision, physics paused
+    GAME_OVER: 'game_over',
+  };
+  let gameState = GAME_STATE.PLAYING;
+  let collisionInfo = null;
+
+  // Initial positions
+  const initialVesselPosition = {x: 0, y: 0, a: 0};
+  const initialVesselVelocity = {x: 0, y: 0, a: 0};
+  const initialTargetPosition = {x: 1000, y: 0, a: TAU/2};
+  const initialTargetVelocity = {x: 1 / 1000, y: 0, a: 0};
+
+  let vesselPosition = {...initialVesselPosition};
+  let vesselVelocity = {...initialVesselVelocity};
+
+  let targetPosition = {...initialTargetPosition};
+  let targetVelocity = {...initialTargetVelocity};
 
   let t = performance.now();
+
+  // Collision thresholds
+  const BOUNCE_THRESHOLD = 5.0; // m/s - below this, bounce; above, explode
 
   const keys = {
     __proto__: null,
@@ -603,7 +510,25 @@ const main = () => {
   // Anchor state
   let anchorState = {
     deployed: false,
-    attachedAngle: 0, // Angle on asteroid where anchor is attached (in asteroid's local coords)
+    attachedAngle: 0,    // Angle on asteroid where anchor is attached (in asteroid's local coords)
+    tetherLength: 0,     // Distance from anchor point to vessel at deployment
+    relativeHeading: 0,  // Vessel heading relative to asteroid orientation
+  };
+
+  // Restart game function
+  const restartGame = () => {
+    vesselPosition = {...initialVesselPosition};
+    vesselVelocity = {...initialVesselVelocity};
+    targetPosition = {...initialTargetPosition};
+    targetVelocity = {...initialTargetVelocity};
+    anchorState = {
+      deployed: false,
+      attachedAngle: 0,
+      tetherLength: 0,
+      relativeHeading: 0,
+    };
+    gameState = GAME_STATE.PLAYING;
+    collisionInfo = null;
   };
 
   /**
@@ -612,23 +537,48 @@ const main = () => {
   const onKeyDown = event => {
     const { key, repeat, metaKey } = event;
     if (repeat || metaKey) return;
+
+    // Handle restart when paused/game over
+    if ((gameState === GAME_STATE.PAUSED || gameState === GAME_STATE.GAME_OVER) && key === ' ') {
+      restartGame();
+      event.stopPropagation();
+      return;
+    }
+
     if (key in keys) {
       keys[key] = 1;
       event.stopPropagation();
 
-      // Toggle anchor on spacebar press
-      if (key === ' ') {
+      // Toggle anchor on spacebar press (only when playing)
+      if (key === ' ' && gameState === GAME_STATE.PLAYING) {
         if (!anchorState.deployed) {
           // Deploy anchor - calculate attachment point on asteroid
           const direction = direction2(targetPosition, vesselPosition);
-          const meridian = (direction + targetPosition.a + TAU) % TAU;
-          const surfaceRadius = radiusAt(describeAsteroidSurface, meridian, T);
+          // Convert world angle to asteroid-local angle
+          const localAngle = (direction - targetPosition.a + TAU) % TAU;
+          const surfaceRadius = radiusAt(describeAsteroidSurface, localAngle, T);
           const distanceToSurface = distance2(vesselPosition, targetPosition) - surfaceRadius;
 
-          // Only attach if close enough (within 50 units)
-          if (distanceToSurface < 50) {
+          // Calculate relative velocity to surface point
+          // Surface point velocity = asteroid center velocity + rotational velocity
+          const tangentSpeed = targetVelocity.a * surfaceRadius;
+          const tangentDir = direction + TAU / 4;
+          const surfaceVelocity = {
+            x: targetVelocity.x + Math.cos(tangentDir) * tangentSpeed,
+            y: targetVelocity.y + Math.sin(tangentDir) * tangentSpeed,
+          };
+          const relativeVelocity = {
+            x: vesselVelocity.x - surfaceVelocity.x,
+            y: vesselVelocity.y - surfaceVelocity.y,
+          };
+          const relativeSpeed = Math.hypot(relativeVelocity.x, relativeVelocity.y);
+
+          // Only attach if close enough (within 20 units) and low relative velocity
+          if (distanceToSurface < 20 && relativeSpeed < 0.5) {
             anchorState.deployed = true;
-            anchorState.attachedAngle = meridian; // Store in asteroid's local coordinates
+            anchorState.attachedAngle = localAngle; // Store in asteroid's local coordinates
+            anchorState.tetherLength = Math.max(0, distanceToSurface); // Distance from surface at deployment
+            anchorState.relativeHeading = vesselPosition.a - targetPosition.a; // Vessel heading relative to asteroid
           }
         } else {
           // Retract anchor
@@ -667,6 +617,11 @@ const main = () => {
 
     setTimeout(simulate, 100);
 
+    // Don't simulate physics if paused or game over
+    if (gameState !== GAME_STATE.PLAYING) {
+      return;
+    }
+
     const vesselThrust = {
       x: (keys.w + keys.ArrowUp - keys.s - keys.ArrowDown) / 100000,
       y: (keys.d + keys.ArrowRight - keys.a - keys.ArrowLeft) / 100000,
@@ -680,52 +635,69 @@ const main = () => {
     };
 
     if (anchorState.deployed) {
-      // When anchored, thrust applies torque to the asteroid
-      // Calculate the anchor point in world space
-      const anchorWorldAngle = anchorState.attachedAngle - targetPosition.a;
-      const anchorRadius = radiusAt(describeAsteroidSurface, anchorState.attachedAngle, T);
-      const anchorPoint = ray2(targetPosition, anchorWorldAngle, anchorRadius);
-
-      // Tether vector from asteroid center to vessel
-      const tetherVector = sub2(vesselPosition, targetPosition);
-      const tetherLength = Math.hypot(tetherVector.x, tetherVector.y);
-
-      // Apply thrust as torque to asteroid (simplified physics)
-      // The thrust perpendicular to the tether creates torque
-      const thrustMagnitude = Math.hypot(vesselImpulse.x, vesselImpulse.y);
-      const thrustAngle = Math.atan2(vesselImpulse.y, vesselImpulse.x);
-      const tetherAngle = Math.atan2(tetherVector.y, tetherVector.x);
-      const angleDiff = thrustAngle - tetherAngle;
-
-      // Torque is proportional to perpendicular component of thrust times tether length
-      const torque = thrustMagnitude * Math.sin(angleDiff) * tetherLength * 0.00001;
-      targetVelocity = { ...targetVelocity, a: targetVelocity.a + torque * dt };
-
-      // Vessel rotates with the asteroid (constrained by tether)
-      // Update vessel position to maintain tether length from anchor point
-      const currentDist = distance2(vesselPosition, anchorPoint);
-      if (currentDist > 0.1) {
-        const toAnchor = direction2(vesselPosition, anchorPoint);
-        // Apply some constraint force to keep vessel at tether length
-        vesselPosition = ray2(anchorPoint, toAnchor + Math.PI, Math.min(currentDist, anchorRadius + 30));
-      }
-
-      // Vessel still rotates independently
-      vesselVelocity = { ...vesselVelocity, a: vesselVelocity.a + vesselImpulse.a * dt };
-      vesselPosition = { ...vesselPosition, a: vesselPosition.a + vesselVelocity.a * dt };
+      const result = updateAnchoredPhysics(
+        vesselPosition,
+        vesselVelocity,
+        targetPosition,
+        targetVelocity,
+        anchorState,
+        surface,
+        vesselImpulse,
+        dt,
+        meanRadius
+      );
+      vesselPosition = result.vesselPosition;
+      vesselVelocity = result.vesselVelocity;
+      targetPosition = result.targetPosition;
+      targetVelocity = result.targetVelocity;
+      anchorState = result.anchorState;
     } else {
-      // Normal flight - thrust affects vessel
-      vesselVelocity = add2a(vesselVelocity, scale2a(vesselImpulse, dt));
-      vesselPosition = add2a(vesselPosition, scale2a(vesselVelocity, dt));
+      const result = updateFlightPhysics(vesselPosition, vesselVelocity, vesselImpulse, dt);
+      vesselPosition = result.vesselPosition;
+      vesselVelocity = result.vesselVelocity;
+      targetPosition = updateTargetPosition(targetPosition, targetVelocity, dt);
     }
 
-    targetPosition = add2a(targetPosition, scale2a(targetVelocity, dt));
+    // Check for collisions (only when not anchored)
+    if (!anchorState.deployed) {
+      const collision = checkCollision(
+        vesselPosition,
+        vesselVelocity,
+        targetPosition,
+        targetVelocity,
+        surface,
+        10 // vessel radius
+      );
+
+      if (collision.collided) {
+        if (collision.relativeSpeed < BOUNCE_THRESHOLD) {
+          // Low-energy collision: bounce
+          const bounceResult = applyBounce(
+            vesselPosition,
+            vesselVelocity,
+            targetPosition,
+            targetVelocity,
+            surface,
+            collision.localAngle,
+            0.6 // restitution coefficient
+          );
+          vesselPosition = bounceResult.vesselPosition;
+          vesselVelocity = bounceResult.vesselVelocity;
+        } else {
+          // High-energy collision: pause physics
+          gameState = GAME_STATE.PAUSED;
+          collisionInfo = {
+            relativeSpeed: collision.relativeSpeed,
+            distanceToSurface: collision.distanceToSurface,
+          };
+        }
+      }
+    }
   };
 
   const draw = () => {
     requestAnimationFrame(draw);
-    plotter.fillStyle = 'solid black';
-    plotter.fillRect(0, 0, $plotter.width, $plotter.height);
+    plotter.clearRect(0, 0, $plotter.width, $plotter.height);
 
     const viewMatrix = m2d.compose(
       m2d.scale(-1),
@@ -745,33 +717,44 @@ const main = () => {
     };
     drawVessel(plotter, m2d.transform(vesselPosition, viewMatrix), vesselPosition.a - vesselPosition.a - TAU/4, 10, C, R, Z, T, thrustState);
     // drawVessel(plotter, m2d.transform(targetPosition, viewMatrix), targetPosition.a - vesselPosition.a - TAU/4, 0.5, C, R, Z, T);
+
+    // Wrap surface drawing to isolate any clip state
+    plotter.save();
     drawSurface(plotter, m2d.transform(targetPosition, viewMatrix), vesselPosition.a - targetPosition.a - TAU/4, describeAsteroidSurface, C, R, Z, T);
+    plotter.restore();
 
     // Draw tether if anchored
     if (anchorState.deployed) {
-      const anchorWorldAngle = anchorState.attachedAngle - targetPosition.a;
+      // Convert local angle to world angle
+      const anchorWorldAngle = anchorState.attachedAngle + targetPosition.a;
       const anchorRadius = radiusAt(describeAsteroidSurface, anchorState.attachedAngle, T);
       const anchorPoint = ray2(targetPosition, anchorWorldAngle, anchorRadius);
       const anchorPointView = m2d.transform(anchorPoint, viewMatrix);
-      const vesselPointView = m2d.transform(vesselPosition, viewMatrix);
 
-      // Draw tether line
-      plotter.save();
-      plotter.strokeStyle = '#0ff';
-      const p1 = project(vesselPointView, C, R, Z);
+      // Vessel is at origin in view space
+      const p1 = project({x: 0, y: 0}, C, R, Z);
       const p2 = project(anchorPointView, C, R, Z);
-      plotter.beginPath();
-      plotter.moveTo(p1.x, p1.y);
-      plotter.lineTo(p2.x, p2.y);
-      plotter.stroke();
-      plotter.restore();
 
-      // Draw anchor point marker
-      const projectedAnchor = project(anchorPointView, C, R, Z);
-      plotter.fillStyle = '#0ff';
-      plotter.beginPath();
-      plotter.arc(projectedAnchor.x, projectedAnchor.y, 4, 0, TAU);
-      plotter.fill();
+      // Only draw if coordinates are valid
+      if (isFinite(p1.x) && isFinite(p1.y) && isFinite(p2.x) && isFinite(p2.y)) {
+        // Draw tether line
+        plotter.save();
+        plotter.strokeStyle = '#0ff';
+        plotter.lineWidth = 2;
+        plotter.beginPath();
+        plotter.moveTo(p1.x, p1.y);
+        plotter.lineTo(p2.x, p2.y);
+        plotter.stroke();
+        plotter.restore();
+
+        // Draw anchor point marker
+        plotter.save();
+        plotter.fillStyle = '#0ff';
+        plotter.beginPath();
+        plotter.arc(p2.x, p2.y, 3, 0, TAU);
+        plotter.fill();
+        plotter.restore();
+      }
     }
 
     // drawSurface(plotter, {x: 2000, y: 0}, Math.random() * Math.PI * 2, starSurfaceRadius, C, R, Z, T);
@@ -780,27 +763,155 @@ const main = () => {
     //
     const vesselBearingToTarget = sub2(vesselPosition, targetPosition);
     const vesselDirectionToTarget = (direction2(targetPosition, vesselPosition) + TAU) % TAU;
-    const vesselDirectionAcrossTarget = perp2(vesselBearingToTarget);
-    const vesselSpeedOnBearingToTarget = dot2(vesselVelocity, vesselBearingToTarget);
+    const bearingLength = Math.hypot(vesselBearingToTarget.x, vesselBearingToTarget.y) || 1;
+    const normalizedBearing = { x: vesselBearingToTarget.x / bearingLength, y: vesselBearingToTarget.y / bearingLength };
+    const vesselDirectionAcrossTarget = perp2(normalizedBearing);
+    const vesselSpeedOnBearingToTarget = dot2(vesselVelocity, normalizedBearing);
     const vesselSpeedAcrossBearingToTarget = dot2(vesselVelocity, vesselDirectionAcrossTarget);
     const direction = (direction2(targetPosition, vesselPosition) + TAU) % TAU;
     const meridian = (direction + targetPosition.a + TAU) % TAU;
     const elevation = radiusAt(describeAsteroidSurface, meridian, T);
-    const range = distance2(vesselPosition, targetPosition) - elevation - 10;
+    const range = Math.max(1, distance2(vesselPosition, targetPosition) - elevation - 10);
     const rangeCircumference = TAU * range;
     const surfaceCircumference = TAU * elevation;
     const surfaceRangeSpeed = (vesselSpeedAcrossBearingToTarget / rangeCircumference - targetVelocity.a);
     const surfaceSpeed = surfaceRangeSpeed / rangeCircumference * surfaceCircumference;
 
-    // Draw visual HUD
-    const hudData = {
-      range: range,
-      rangeSpeed: vesselSpeedOnBearingToTarget,
-      heading: ((vesselDirectionToTarget - vesselPosition.a + TAU/2) % TAU / TAU),
-      spin: -vesselVelocity.a % TAU / TAU,
-      anchored: anchorState.deployed,
-    };
-    drawHUD(plotter, viewportSizePx, hudData);
+    // Draw Z indicator when slider is being dragged
+    if (isDraggingZ) {
+      plotter.save();
+      const indicatorRadius = R / 2; // Half the viewport width - represents distance Z
+      const infinityRadius = R; // Represents infinity in the projection
+      const centerX = C.x;
+      const centerY = C.y;
+
+      // Draw first circle (distance Z)
+      plotter.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+      plotter.lineWidth = 2;
+      plotter.setLineDash([5, 5]);
+      plotter.beginPath();
+      plotter.arc(centerX, centerY, indicatorRadius, 0, TAU);
+      plotter.stroke();
+      plotter.setLineDash([]);
+
+      // Draw radius line with arrowheads for first circle
+      plotter.strokeStyle = 'rgba(0, 255, 255, 0.7)';
+      plotter.lineWidth = 2;
+      plotter.beginPath();
+      plotter.moveTo(centerX, centerY);
+      plotter.lineTo(centerX + indicatorRadius, centerY);
+      plotter.stroke();
+
+      // Arrowhead at outer end
+      const arrowLength = 8;
+      const arrowWidth = 6;
+      plotter.beginPath();
+      plotter.moveTo(centerX + indicatorRadius, centerY);
+      plotter.lineTo(centerX + indicatorRadius - arrowLength, centerY - arrowWidth / 2);
+      plotter.lineTo(centerX + indicatorRadius - arrowLength, centerY + arrowWidth / 2);
+      plotter.closePath();
+      plotter.fillStyle = 'rgba(0, 255, 255, 0.7)';
+      plotter.fill();
+
+      // Arrowhead at center
+      plotter.beginPath();
+      plotter.moveTo(centerX, centerY);
+      plotter.lineTo(centerX + arrowLength, centerY - arrowWidth / 2);
+      plotter.lineTo(centerX + arrowLength, centerY + arrowWidth / 2);
+      plotter.closePath();
+      plotter.fill();
+
+      // Label for first circle with appropriate units
+      plotter.fillStyle = 'rgba(0, 255, 255, 0.9)';
+      plotter.font = '12px monospace';
+      plotter.textAlign = 'center';
+      plotter.textBaseline = 'middle';
+      
+      // Convert to appropriate unit
+      let zValue, zUnit;
+      if (Z < 1000) {
+        zValue = Z;
+        zUnit = 'm';
+      } else if (Z < 1e6) {
+        zValue = Z / 1000;
+        zUnit = 'km';
+      } else if (Z < 1e9) {
+        zValue = Z / 1e6;
+        zUnit = 'Mm';
+      } else if (Z < 1e12) {
+        zValue = Z / 1e9;
+        zUnit = 'Gm';
+      } else if (Z < 1e15) {
+        zValue = Z / 1e12;
+        zUnit = 'Tm';
+      } else {
+        zValue = Z / 1e15;
+        zUnit = 'Pm';
+      }
+      
+      const zValueFormat = new Intl.NumberFormat([], {
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 0,
+      });
+      
+      plotter.fillText(
+        `Z: ${zValueFormat.format(zValue)} ${zUnit}`,
+        centerX + indicatorRadius / 2,
+        centerY - 20
+      );
+
+      // Draw second circle (infinity)
+      plotter.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+      plotter.lineWidth = 2;
+      plotter.setLineDash([3, 3]);
+      plotter.beginPath();
+      plotter.arc(centerX, centerY, infinityRadius, 0, TAU);
+      plotter.stroke();
+      plotter.setLineDash([]);
+
+      // Label for infinity circle
+      plotter.fillStyle = 'rgba(0, 255, 255, 0.9)';
+      plotter.font = '12px monospace';
+      plotter.textAlign = 'center';
+      plotter.textBaseline = 'middle';
+      plotter.fillText(
+        'infinity',
+        centerX + infinityRadius,
+        centerY - 20
+      );
+
+      plotter.restore();
+    }
+
+    // Draw collision overlay if paused
+    if (gameState === GAME_STATE.PAUSED && collisionInfo) {
+      plotter.save();
+      // Semi-transparent red overlay
+      plotter.fillStyle = 'rgba(200, 0, 0, 0.7)';
+      plotter.fillRect(0, 0, $plotter.width, $plotter.height);
+
+      // Collision message
+      plotter.fillStyle = '#fff';
+      plotter.font = 'bold 24px monospace';
+      plotter.textAlign = 'center';
+      plotter.textBaseline = 'middle';
+      const centerX = $plotter.width / 2;
+      const centerY = $plotter.height / 2;
+      
+      plotter.fillText('COLLISION!', centerX, centerY - 40);
+      plotter.font = '16px monospace';
+      plotter.fillText(
+        `Impact Speed: ${collisionInfo.relativeSpeed.toFixed(2)} m/s`,
+        centerX,
+        centerY
+      );
+      plotter.fillText(
+        'Press SPACE to restart',
+        centerX,
+        centerY + 40
+      );
+      plotter.restore();
+    }
 
     $info.innerText = `\
     range to target: ${distanceFormat.format(range)}m
@@ -811,6 +922,8 @@ const main = () => {
     surface position: ${((vesselDirectionToTarget + targetPosition.a + TAU) % TAU / TAU).toFixed(2)}τ
     surface speed: ${surfaceSpeed.toFixed(1)}m/s
     anchored: ${anchorState.deployed ? 'YES' : 'NO'}
+    Z: ${Z.toFixed(0)}
+    ${gameState === GAME_STATE.PAUSED ? '\n    COLLISION - Press SPACE to restart' : ''}
     `;
   };
 
